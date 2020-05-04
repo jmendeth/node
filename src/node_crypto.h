@@ -193,6 +193,7 @@ class SSLWrap {
 
   SSLWrap(Environment* env, SecureContext* sc, Kind kind)
       : env_(env),
+        sc_(sc),
         kind_(kind),
         next_sess_(nullptr),
         session_callbacks_(false),
@@ -229,6 +230,7 @@ class SSLWrap {
 
   static void ConfigureSecureContext(SecureContext* sc);
   static void AddMethods(Environment* env, v8::Local<v8::FunctionTemplate> t);
+  static void AddConstants(Environment* env, v8::Local<v8::Object> target);
 
   static SSL_SESSION* GetSessionCallback(SSL* s,
                                          const unsigned char* key,
@@ -281,6 +283,43 @@ class SSLWrap {
   static int TLSExtStatusCallback(SSL* s, void* arg);
   static int SSLCertCallback(SSL* s, void* arg);
 
+  static void SSLInfoCallback(const SSL* ssl_, int where, int ret);
+
+  v8::Local<v8::Value> GetSSLError(int status, int* err, std::string* msg);
+
+  static void OnClientHelloParseEnd(void* arg);
+  static void SetVerifyMode(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void EnableSessionCallbacks(
+      const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void EnableKeylogCallback(
+      const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void EnableTrace(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void EnableCertCb(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void GetServername(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void SetServername(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static int SelectSNIContextCallback(SSL* s, int* ad, void* arg);
+
+#ifndef OPENSSL_NO_PSK
+  static void SetPskIdentityHint(
+      const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void EnablePskCallback(
+      const v8::FunctionCallbackInfo<v8::Value>& args);
+  static unsigned int PskServerCallback(SSL* s,
+                                        const char* identity,
+                                        unsigned char* psk,
+                                        unsigned int max_psk_len);
+  static unsigned int PskClientCallback(SSL* s,
+                                        const char* hint,
+                                        char* identity,
+                                        unsigned int max_identity_len,
+                                        unsigned char* psk,
+                                        unsigned int max_psk_len);
+#endif
+
+  virtual void StartHelloParse();
+  virtual void Cycle() = 0;
+
+  void InitSSL();
   void DestroySSL();
   void WaitForCertCb(CertCb cb, void* arg);
   int SetCACerts(SecureContext* sc);
@@ -290,11 +329,14 @@ class SSLWrap {
   }
 
   Environment* const env_;
+  SecureContext* sc_;
   Kind kind_;
   SSLSessionPointer next_sess_;
   SSLPointer ssl_;
   bool session_callbacks_;
   bool awaiting_new_session_;
+  bool started_ = false;
+  bool established_ = false;
 
   // SSL_set_cert_cb
   CertCb cert_cb_;
@@ -305,6 +347,11 @@ class SSLWrap {
 
   v8::Global<v8::ArrayBufferView> ocsp_response_;
   BaseObjectPtr<SecureContext> sni_context_;
+
+  // Maximum number of bytes for hello parser
+  static const int kMaxHelloLength = 16384;
+
+  BIOPointer bio_trace_;
 
   friend class SecureContext;
 };

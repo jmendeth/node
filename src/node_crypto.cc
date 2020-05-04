@@ -32,6 +32,7 @@
 
 #include "async_wrap-inl.h"
 #include "base_object-inl.h"
+#include "debug_utils-inl.h"
 #include "env-inl.h"
 #include "memory_tracker-inl.h"
 #include "string_bytes.h"
@@ -71,6 +72,7 @@ using v8::Boolean;
 using v8::ConstructorBehavior;
 using v8::Context;
 using v8::DontDelete;
+using v8::EscapableHandleScope;
 using v8::Exception;
 using v8::External;
 using v8::False;
@@ -118,6 +120,14 @@ static bool extra_root_certs_loaded = false;
 // Just to generate static methods
 template void SSLWrap<TLSWrap>::AddMethods(Environment* env,
                                            Local<FunctionTemplate> t);
+template void SSLWrap<TLSWrap>::AddConstants(Environment* env,
+                                           Local<Object> target);
+template void SSLWrap<TLSWrap>::InitSSL();
+template void SSLWrap<TLSWrap>::StartHelloParse();
+template v8::Local<v8::Value> SSLWrap<TLSWrap>::GetSSLError(
+    int status,
+    int* err,
+    std::string* msg);
 template void SSLWrap<TLSWrap>::ConfigureSecureContext(SecureContext* sc);
 template int SSLWrap<TLSWrap>::SetCACerts(SecureContext* sc);
 template void SSLWrap<TLSWrap>::MemoryInfo(MemoryTracker* tracker) const;
@@ -1744,8 +1754,36 @@ void SSLWrap<Base>::AddMethods(Environment* env, Local<FunctionTemplate> t) {
   env->SetProtoMethodNoSideEffect(t, "getALPNNegotiatedProtocol",
                                   GetALPNNegotiatedProto);
   env->SetProtoMethod(t, "setALPNProtocols", SetALPNProtocols);
+
+  env->SetProtoMethod(t, "setVerifyMode", SetVerifyMode);
+  env->SetProtoMethod(t, "enableSessionCallbacks", EnableSessionCallbacks);
+  env->SetProtoMethod(t, "enableKeylogCallback", EnableKeylogCallback);
+  env->SetProtoMethod(t, "enableTrace", EnableTrace);
+  env->SetProtoMethod(t, "enableCertCb", EnableCertCb);
+
+#ifndef OPENSSL_NO_PSK
+  env->SetProtoMethod(t, "setPskIdentityHint", SetPskIdentityHint);
+  env->SetProtoMethod(t, "enablePskCallback", EnablePskCallback);
+#endif
+
+  env->SetProtoMethod(t, "getServername", GetServername);
+  env->SetProtoMethod(t, "setServername", SetServername);
 }
 
+// Check required capabilities were not excluded from the OpenSSL build:
+// - OPENSSL_NO_SSL_TRACE excludes SSL_trace()
+// - OPENSSL_NO_STDIO excludes BIO_new_fp()
+// HAVE_SSL_TRACE is available on the internal tcp_wrap binding for the tests.
+#if defined(OPENSSL_NO_SSL_TRACE) || defined(OPENSSL_NO_STDIO)
+# define HAVE_SSL_TRACE 0
+#else
+# define HAVE_SSL_TRACE 1
+#endif
+
+template <class Base>
+void SSLWrap<Base>::AddConstants(Environment* env, Local<Object> target) {
+  NODE_DEFINE_CONSTANT(target, HAVE_SSL_TRACE);
+}
 
 template <class Base>
 void SSLWrap<Base>::ConfigureSecureContext(SecureContext* sc) {
@@ -1798,7 +1836,7 @@ int SSLWrap<Base>::NewSessionCallback(SSL* s, SSL_SESSION* sess) {
       session_id_length).ToLocalChecked();
   Local<Value> argv[] = { session_id, session };
   // On servers, we pause the handshake until callback of 'newSession', which
-  // calls NewSessionDoneCb(). On clients, there is no callback to wait for.
+  // calls NewSessionDone(). On clients, there is no callback to wait for.
   if (w->is_server())
     w->awaiting_new_session_ = true;
   w->MakeCallback(env->onnewsession_string(), arraysize(argv), argv);
@@ -2049,7 +2087,8 @@ void SSLWrap<Base>::NewSessionDone(const FunctionCallbackInfo<Value>& args) {
   Base* w;
   ASSIGN_OR_RETURN_UNWRAP(&w, args.Holder());
   w->awaiting_new_session_ = false;
-  w->NewSessionDoneCb();
+  Debug(w, "NewSessionDone()");
+  static_cast<SSLWrap*>(w)->Cycle();
 }
 
 
@@ -2512,6 +2551,500 @@ void SSLWrap<Base>::CertCbDone(const FunctionCallbackInfo<Value>& args) {
 
   cb(arg);
 }
+
+
+template <class Base>
+void SSLWrap<Base>::SSLInfoCallback(const SSL* ssl_, int where, int ret) {
+  if (!(where & (SSL_CB_HANDSHAKE_START | SSL_CB_HANDSHAKE_DONE)))
+    return;
+
+  // SSL_renegotiate_pending() should take `const SSL*`, but it does not.
+  SSL* ssl = const_cast<SSL*>(ssl_);
+  Base* c = static_cast<Base*>(SSL_get_app_data(ssl_));
+  Environment* env = c->env();
+  HandleScope handle_scope(env->isolate());
+  Context::Scope context_scope(env->context());
+  Local<Object> object = c->object();
+
+  if (where & SSL_CB_HANDSHAKE_START) {
+    Debug(c, "SSLInfoCallback(SSL_CB_HANDSHAKE_START);");
+    // Start is tracked to limit number and frequency of renegotiation attempts,
+    // since excessive renegotiation may be an attack.
+    Local<Value> callback;
+
+    if (object->Get(env->context(), env->onhandshakestart_string())
+          .ToLocal(&callback) && callback->IsFunction()) {
+      Local<Value> argv[] = { env->GetNow() };
+      c->MakeCallback(callback.As<Function>(), arraysize(argv), argv);
+    }
+  }
+
+  // SSL_CB_HANDSHAKE_START and SSL_CB_HANDSHAKE_DONE are called
+  // sending HelloRequest in OpenSSL-1.1.1.
+  // We need to check whether this is in a renegotiation state or not.
+  if (where & SSL_CB_HANDSHAKE_DONE && !SSL_renegotiate_pending(ssl)) {
+    Debug(c, "SSLInfoCallback(SSL_CB_HANDSHAKE_DONE);");
+    CHECK(!SSL_renegotiate_pending(ssl));
+    Local<Value> callback;
+
+    c->established_ = true;
+
+    if (object->Get(env->context(), env->onhandshakedone_string())
+          .ToLocal(&callback) && callback->IsFunction()) {
+      c->MakeCallback(callback.As<Function>(), 0, nullptr);
+    }
+  }
+}
+
+
+template <class Base>
+void SSLWrap<Base>::SetVerifyMode(const FunctionCallbackInfo<Value>& args) {
+  Base* wrap;
+  ASSIGN_OR_RETURN_UNWRAP(&wrap, args.Holder());
+
+  CHECK_EQ(args.Length(), 2);
+  CHECK(args[0]->IsBoolean());
+  CHECK(args[1]->IsBoolean());
+  CHECK_NOT_NULL(wrap->ssl_);
+
+  int verify_mode;
+  if (wrap->is_server()) {
+    bool request_cert = args[0]->IsTrue();
+    if (!request_cert) {
+      // If no cert is requested, there will be none to reject as unauthorized.
+      verify_mode = SSL_VERIFY_NONE;
+    } else {
+      bool reject_unauthorized = args[1]->IsTrue();
+      verify_mode = SSL_VERIFY_PEER;
+      if (reject_unauthorized)
+        verify_mode |= SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+    }
+  } else {
+    // Servers always send a cert if the cipher is not anonymous (anon is
+    // disabled by default), so use VERIFY_NONE and check the cert after the
+    // handshake has completed.
+    verify_mode = SSL_VERIFY_NONE;
+  }
+
+  // Always allow a connection. We'll reject in javascript.
+  SSL_set_verify(wrap->ssl_.get(), verify_mode, crypto::VerifyCallback);
+}
+
+
+template <class Base>
+void SSLWrap<Base>::EnableSessionCallbacks(
+    const FunctionCallbackInfo<Value>& args) {
+  Base* wrap;
+  ASSIGN_OR_RETURN_UNWRAP(&wrap, args.Holder());
+  CHECK_NOT_NULL(wrap->ssl_);
+  wrap->enable_session_callbacks();
+
+  // Clients don't use the HelloParser.
+  if (wrap->is_client())
+    return;
+
+  static_cast<SSLWrap*>(wrap)->StartHelloParse();
+  wrap->hello_parser_.Start(OnClientHello, OnClientHelloParseEnd, wrap);
+}
+
+
+template <class Base>
+void SSLWrap<Base>::EnableKeylogCallback(
+    const FunctionCallbackInfo<Value>& args) {
+  Base* wrap;
+  ASSIGN_OR_RETURN_UNWRAP(&wrap, args.Holder());
+  CHECK_NOT_NULL(wrap->sc_);
+  SSL_CTX_set_keylog_callback(wrap->sc_->ctx_.get(), KeylogCallback);
+}
+
+
+template <class Base>
+void SSLWrap<Base>::EnableTrace(
+    const FunctionCallbackInfo<Value>& args) {
+  Base* wrap;
+  ASSIGN_OR_RETURN_UNWRAP(&wrap, args.Holder());
+
+#if HAVE_SSL_TRACE
+  if (wrap->ssl_) {
+    wrap->bio_trace_.reset(BIO_new_fp(stderr,  BIO_NOCLOSE | BIO_FP_TEXT));
+    SSL_set_msg_callback(wrap->ssl_.get(), [](int write_p, int version, int
+          content_type, const void* buf, size_t len, SSL* ssl, void* arg)
+        -> void {
+        // BIO_write(), etc., called by SSL_trace, may error. The error should
+        // be ignored, trace is a "best effort", and its usually because stderr
+        // is a non-blocking pipe, and its buffer has overflowed. Leaving errors
+        // on the stack that can get picked up by later SSL_ calls causes
+        // unwanted failures in SSL_ calls, so keep the error stack unchanged.
+        crypto::MarkPopErrorOnReturn mark_pop_error_on_return;
+        SSL_trace(write_p,  version, content_type, buf, len, ssl, arg);
+    });
+    SSL_set_msg_callback_arg(wrap->ssl_.get(), wrap->bio_trace_.get());
+  }
+#endif
+}
+
+
+template <class Base>
+void SSLWrap<Base>::EnableCertCb(const FunctionCallbackInfo<Value>& args) {
+  Base* wrap;
+  ASSIGN_OR_RETURN_UNWRAP(&wrap, args.Holder());
+  wrap->WaitForCertCb(OnClientHelloParseEnd, wrap);
+}
+
+
+template <class Base>
+void SSLWrap<Base>::OnClientHelloParseEnd(void* arg) {
+  Base* c = static_cast<Base*>(arg);
+  Debug(c, "OnClientHelloParseEnd()");
+  static_cast<SSLWrap*>(c)->Cycle();
+}
+
+
+template <class Base>
+Local<Value> SSLWrap<Base>::GetSSLError(
+    int status, int* err, std::string* msg) {
+  Environment* env = static_cast<Base*>(this)->env();
+  EscapableHandleScope scope(env->isolate());
+
+  // ssl_ is already destroyed in reading EOF by close notify alert.
+  if (ssl_ == nullptr)
+    return Local<Value>();
+
+  *err = SSL_get_error(ssl_.get(), status);
+  switch (*err) {
+    case SSL_ERROR_NONE:
+    case SSL_ERROR_WANT_READ:
+    case SSL_ERROR_WANT_WRITE:
+    case SSL_ERROR_WANT_X509_LOOKUP:
+      return Local<Value>();
+
+    case SSL_ERROR_ZERO_RETURN:
+      return scope.Escape(env->zero_return_string());
+
+    case SSL_ERROR_SSL:
+    case SSL_ERROR_SYSCALL:
+      {
+        unsigned long ssl_err = ERR_peek_error();  // NOLINT(runtime/int)
+        BIO* bio = BIO_new(BIO_s_mem());
+        ERR_print_errors(bio);
+
+        BUF_MEM* mem;
+        BIO_get_mem_ptr(bio, &mem);
+
+        Isolate* isolate = env->isolate();
+        Local<Context> context = isolate->GetCurrentContext();
+
+        Local<String> message =
+            OneByteString(isolate, mem->data, mem->length);
+        Local<Value> exception = Exception::Error(message);
+        Local<Object> obj = exception->ToObject(context).ToLocalChecked();
+
+        const char* ls = ERR_lib_error_string(ssl_err);
+        const char* fs = ERR_func_error_string(ssl_err);
+        const char* rs = ERR_reason_error_string(ssl_err);
+
+        if (ls != nullptr)
+          obj->Set(context, env->library_string(),
+                   OneByteString(isolate, ls)).Check();
+        if (fs != nullptr)
+          obj->Set(context, env->function_string(),
+                   OneByteString(isolate, fs)).Check();
+        if (rs != nullptr) {
+          obj->Set(context, env->reason_string(),
+                   OneByteString(isolate, rs)).Check();
+
+          // SSL has no API to recover the error name from the number, so we
+          // transform reason strings like "this error" to "ERR_SSL_THIS_ERROR",
+          // which ends up being close to the original error macro name.
+          std::string code(rs);
+
+          for (auto& c : code) {
+            if (c == ' ')
+              c = '_';
+            else
+              c = ToUpper(c);
+          }
+          obj->Set(context, env->code_string(),
+                   OneByteString(isolate, ("ERR_SSL_" + code).c_str()))
+                     .Check();
+        }
+
+        if (msg != nullptr)
+          msg->assign(mem->data, mem->data + mem->length);
+
+        BIO_free_all(bio);
+
+        return scope.Escape(exception);
+      }
+
+    default:
+      UNREACHABLE();
+  }
+  UNREACHABLE();
+}
+
+
+template <class Base>
+void SSLWrap<Base>::InitSSL() {
+  // NOTE: This could be overridden in SetVerifyMode
+  SSL_set_verify(ssl_.get(), SSL_VERIFY_NONE, crypto::VerifyCallback);
+
+#ifdef SSL_MODE_RELEASE_BUFFERS
+  SSL_set_mode(ssl_.get(), SSL_MODE_RELEASE_BUFFERS);
+#endif  // SSL_MODE_RELEASE_BUFFERS
+
+  SSL_set_app_data(ssl_.get(), static_cast<Base*>(this));
+  // Using InfoCallback isn't how we are supposed to check handshake progress:
+  //   https://github.com/openssl/openssl/issues/7199#issuecomment-420915993
+  //
+  // Note on when this gets called on various openssl versions:
+  //   https://github.com/openssl/openssl/issues/7199#issuecomment-420670544
+  SSL_set_info_callback(ssl_.get(), SSLInfoCallback);
+
+  if (is_server()) {
+    SSL_CTX_set_tlsext_servername_callback(sc_->ctx_.get(),
+                                           SelectSNIContextCallback);
+  }
+
+  ConfigureSecureContext(sc_);
+
+  SSL_set_cert_cb(ssl_.get(), SSLCertCallback, nullptr);
+
+  if (is_server()) {
+    SSL_set_accept_state(ssl_.get());
+  } else if (is_client()) {
+    SSL_set_connect_state(ssl_.get());
+  } else {
+    // Unexpected
+    ABORT();
+  }
+}
+
+
+template <class Base>
+int SSLWrap<Base>::SelectSNIContextCallback(SSL* s, int* ad, void* arg) {
+  Base* p = static_cast<Base*>(SSL_get_app_data(s));
+  Environment* env = p->env();
+
+  const char* servername = SSL_get_servername(s, TLSEXT_NAMETYPE_host_name);
+
+  if (servername == nullptr)
+    return SSL_TLSEXT_ERR_OK;
+
+  HandleScope handle_scope(env->isolate());
+  Context::Scope context_scope(env->context());
+
+  // Call the SNI callback and use its return value as context
+  Local<Object> object = p->object();
+  Local<Value> ctx;
+
+  // Set the servername as early as possible
+  Local<Object> owner = p->GetOwner();
+  if (!owner->Set(env->context(),
+                  env->servername_string(),
+                  OneByteString(env->isolate(), servername)).FromMaybe(false)) {
+    return SSL_TLSEXT_ERR_NOACK;
+  }
+
+  if (!object->Get(env->context(), env->sni_context_string()).ToLocal(&ctx))
+    return SSL_TLSEXT_ERR_NOACK;
+
+  // Not an object, probably undefined or null
+  if (!ctx->IsObject())
+    return SSL_TLSEXT_ERR_NOACK;
+
+  Local<FunctionTemplate> cons = env->secure_context_constructor_template();
+  if (!cons->HasInstance(ctx)) {
+    // Failure: incorrect SNI context object
+    Local<Value> err = Exception::TypeError(env->sni_context_err_string());
+    p->MakeCallback(env->onerror_string(), 1, &err);
+    return SSL_TLSEXT_ERR_NOACK;
+  }
+
+  SecureContext* sc = Unwrap<SecureContext>(ctx.As<Object>());
+  CHECK_NOT_NULL(sc);
+  p->sni_context_ = BaseObjectPtr<SecureContext>(sc);
+
+  p->ConfigureSecureContext(sc);
+  CHECK_EQ(SSL_set_SSL_CTX(p->ssl_.get(), sc->ctx_.get()), sc->ctx_.get());
+  p->SetCACerts(sc);
+
+  return SSL_TLSEXT_ERR_OK;
+}
+
+
+#ifndef OPENSSL_NO_PSK
+
+template <class Base>
+void SSLWrap<Base>::SetPskIdentityHint(
+    const FunctionCallbackInfo<Value>& args) {
+  Base* p;
+  ASSIGN_OR_RETURN_UNWRAP(&p, args.Holder());
+  CHECK_NOT_NULL(p->ssl_);
+
+  Environment* env = p->env();
+  Isolate* isolate = env->isolate();
+
+  CHECK(args[0]->IsString());
+  node::Utf8Value hint(isolate, args[0].As<String>());
+
+  if (!SSL_use_psk_identity_hint(p->ssl_.get(), *hint)) {
+    Local<Value> err = node::ERR_TLS_PSK_SET_IDENTIY_HINT_FAILED(isolate);
+    p->MakeCallback(env->onerror_string(), 1, &err);
+  }
+}
+
+template <class Base>
+void SSLWrap<Base>::EnablePskCallback(const FunctionCallbackInfo<Value>& args) {
+  Base* wrap;
+  ASSIGN_OR_RETURN_UNWRAP(&wrap, args.Holder());
+  CHECK_NOT_NULL(wrap->ssl_);
+
+  SSL_set_psk_server_callback(wrap->ssl_.get(), PskServerCallback);
+  SSL_set_psk_client_callback(wrap->ssl_.get(), PskClientCallback);
+}
+
+template <class Base>
+unsigned int SSLWrap<Base>::PskServerCallback(SSL* s,
+                                              const char* identity,
+                                              unsigned char* psk,
+                                              unsigned int max_psk_len) {
+  Base* p = static_cast<Base*>(SSL_get_app_data(s));
+
+  Environment* env = p->env();
+  Isolate* isolate = env->isolate();
+  HandleScope scope(isolate);
+
+  MaybeLocal<String> maybe_identity_str =
+      v8::String::NewFromUtf8(isolate, identity, v8::NewStringType::kNormal);
+
+  v8::Local<v8::String> identity_str;
+  if (!maybe_identity_str.ToLocal(&identity_str)) return 0;
+
+  // Make sure there are no utf8 replacement symbols.
+  v8::String::Utf8Value identity_utf8(isolate, identity_str);
+  if (strcmp(*identity_utf8, identity) != 0) return 0;
+
+  Local<Value> argv[] = {identity_str,
+                         Integer::NewFromUnsigned(isolate, max_psk_len)};
+
+  MaybeLocal<Value> maybe_psk_val =
+      p->MakeCallback(env->onpskexchange_symbol(), arraysize(argv), argv);
+  Local<Value> psk_val;
+  if (!maybe_psk_val.ToLocal(&psk_val) || !psk_val->IsArrayBufferView())
+    return 0;
+
+  char* psk_buf = Buffer::Data(psk_val);
+  size_t psk_buflen = Buffer::Length(psk_val);
+
+  if (psk_buflen > max_psk_len) return 0;
+
+  memcpy(psk, psk_buf, psk_buflen);
+  return psk_buflen;
+}
+
+template <class Base>
+unsigned int SSLWrap<Base>::PskClientCallback(SSL* s,
+                                              const char* hint,
+                                              char* identity,
+                                              unsigned int max_identity_len,
+                                              unsigned char* psk,
+                                              unsigned int max_psk_len) {
+  Base* p = static_cast<Base*>(SSL_get_app_data(s));
+
+  Environment* env = p->env();
+  Isolate* isolate = env->isolate();
+  HandleScope scope(isolate);
+
+  Local<Value> argv[] = {Null(isolate),
+                         Integer::NewFromUnsigned(isolate, max_psk_len),
+                         Integer::NewFromUnsigned(isolate, max_identity_len)};
+  if (hint != nullptr) {
+    MaybeLocal<String> maybe_hint = String::NewFromUtf8(isolate, hint);
+
+    Local<String> local_hint;
+    if (!maybe_hint.ToLocal(&local_hint)) return 0;
+
+    argv[0] = local_hint;
+  }
+  MaybeLocal<Value> maybe_ret =
+      p->MakeCallback(env->onpskexchange_symbol(), arraysize(argv), argv);
+  Local<Value> ret;
+  if (!maybe_ret.ToLocal(&ret) || !ret->IsObject()) return 0;
+  Local<Object> obj = ret.As<Object>();
+
+  MaybeLocal<Value> maybe_psk_val = obj->Get(env->context(), env->psk_string());
+
+  Local<Value> psk_val;
+  if (!maybe_psk_val.ToLocal(&psk_val) || !psk_val->IsArrayBufferView())
+    return 0;
+
+  char* psk_buf = Buffer::Data(psk_val);
+  size_t psk_buflen = Buffer::Length(psk_val);
+
+  if (psk_buflen > max_psk_len) return 0;
+
+  MaybeLocal<Value> maybe_identity_val =
+      obj->Get(env->context(), env->identity_string());
+  Local<Value> identity_val;
+  if (!maybe_identity_val.ToLocal(&identity_val) || !identity_val->IsString())
+    return 0;
+  Local<String> identity_str = identity_val.As<String>();
+
+  String::Utf8Value identity_buf(isolate, identity_str);
+  size_t identity_len = identity_buf.length();
+
+  if (identity_len > max_identity_len) return 0;
+
+  memcpy(identity, *identity_buf, identity_len);
+  memcpy(psk, psk_buf, psk_buflen);
+
+  return psk_buflen;
+}
+
+#endif /* !OPENSSL_NO_PSK */
+
+
+template <class Base>
+void SSLWrap<Base>::GetServername(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
+
+  Base* wrap;
+  ASSIGN_OR_RETURN_UNWRAP(&wrap, args.Holder());
+
+  CHECK_NOT_NULL(wrap->ssl_);
+
+  const char* servername = SSL_get_servername(wrap->ssl_.get(),
+                                              TLSEXT_NAMETYPE_host_name);
+  if (servername != nullptr) {
+    args.GetReturnValue().Set(OneByteString(env->isolate(), servername));
+  } else {
+    args.GetReturnValue().Set(false);
+  }
+}
+
+
+template <class Base>
+void SSLWrap<Base>::SetServername(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
+
+  Base* wrap;
+  ASSIGN_OR_RETURN_UNWRAP(&wrap, args.Holder());
+
+  CHECK_EQ(args.Length(), 1);
+  CHECK(args[0]->IsString());
+  CHECK(!wrap->started_);
+  CHECK(wrap->is_client());
+
+  CHECK_NOT_NULL(wrap->ssl_);
+
+  node::Utf8Value servername(env->isolate(), args[0].As<String>());
+  SSL_set_tlsext_host_name(wrap->ssl_.get(), *servername);
+}
+
+
+template <class Base>
+void SSLWrap<Base>::StartHelloParse() {}
 
 
 template <class Base>
