@@ -118,12 +118,15 @@ class SecureContext final : public BaseObject {
   unsigned char ticket_key_aes_[16];
   unsigned char ticket_key_hmac_[16];
 
+  bool is_dtls = false;
+
  protected:
   // OpenSSL structures are opaque. This is sizeof(SSL_CTX) for OpenSSL 1.1.1b:
   static const int64_t kExternalSize = 1024;
 
   static void New(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void Init(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void IsDTLS(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void SetKey(const v8::FunctionCallbackInfo<v8::Value>& args);
 #ifndef OPENSSL_NO_ENGINE
   static void SetEngineKey(const v8::FunctionCallbackInfo<v8::Value>& args);

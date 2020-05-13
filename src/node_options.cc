@@ -531,6 +531,11 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
             "set default TLS maximum to TLSv1.3 (default: TLSv1.3)",
             &EnvironmentOptions::tls_max_v1_3,
             kAllowedInEnvironment);
+
+  AddOption("--dtls-min-v1.0",
+            "set default DTLS minimum to DTLSv1.0 (default: DTLSv1.2)",
+            &EnvironmentOptions::dtls_min_v1_0,
+            kAllowedInEnvironment);
 }
 
 PerIsolateOptionsParser::PerIsolateOptionsParser(

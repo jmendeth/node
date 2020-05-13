@@ -1065,6 +1065,14 @@ void DefineCryptoConstants(Local<Object> target) {
   NODE_DEFINE_CONSTANT(target, TLS1_3_VERSION);
 #endif
 
+#ifdef DTLS1_VERSION
+  NODE_DEFINE_CONSTANT(target, DTLS1_VERSION);
+#endif
+
+#ifdef DTLS1_2_VERSION
+  NODE_DEFINE_CONSTANT(target, DTLS1_2_VERSION);
+#endif
+
 #if HAVE_OPENSSL
   // NOTE: These are not defines
   NODE_DEFINE_CONSTANT(target, POINT_CONVERSION_COMPRESSED);

@@ -459,6 +459,7 @@ void SecureContext::Initialize(Environment* env, Local<Object> target) {
   t->SetClassName(secureContextString);
 
   env->SetProtoMethod(t, "init", Init);
+  env->SetProtoMethod(t, "isDTLS", IsDTLS);
   env->SetProtoMethod(t, "setKey", SetKey);
 #ifndef OPENSSL_NO_ENGINE
   env->SetProtoMethod(t, "setEngineKey", SetEngineKey);
@@ -547,24 +548,27 @@ void SecureContext::New(const FunctionCallbackInfo<Value>& args) {
 // A maxVersion of 0 means "any", but OpenSSL may support TLS versions that
 // Node.js doesn't, so pin the max to what we do support.
 const int MAX_SUPPORTED_VERSION = TLS1_3_VERSION;
+const int DTLS_MAX_SUPPORTED_VERSION = DTLS1_2_VERSION;
 
 void SecureContext::Init(const FunctionCallbackInfo<Value>& args) {
   SecureContext* sc;
   ASSIGN_OR_RETURN_UNWRAP(&sc, args.Holder());
   Environment* env = sc->env();
 
-  CHECK_EQ(args.Length(), 3);
+  CHECK_EQ(args.Length(), 4);
   CHECK(args[1]->IsInt32());
   CHECK(args[2]->IsInt32());
 
   int min_version = args[1].As<Int32>()->Value();
   int max_version = args[2].As<Int32>()->Value();
-  const SSL_METHOD* method = TLS_method();
+  bool dtls = args[3]->IsTrue();
+  const SSL_METHOD* method = dtls ? DTLS_method() : TLS_method();
 
   if (max_version == 0)
-    max_version = MAX_SUPPORTED_VERSION;
+    max_version = dtls ? DTLS_MAX_SUPPORTED_VERSION : MAX_SUPPORTED_VERSION;
 
-  if (args[0]->IsString()) {
+  // We don't implement the legacy method selection API for DTLS
+  if (!dtls && args[0]->IsString()) {
     const node::Utf8Value sslmethod(env->isolate(), args[0]);
 
     // Note that SSLv2 and SSLv3 are disallowed but SSLv23_method and friends
@@ -648,6 +652,7 @@ void SecureContext::Init(const FunctionCallbackInfo<Value>& args) {
     }
   }
 
+  sc->is_dtls = dtls;
   sc->ctx_.reset(SSL_CTX_new(method));
   SSL_CTX_set_app_data(sc->ctx_.get(), sc);
 
@@ -682,6 +687,15 @@ void SecureContext::Init(const FunctionCallbackInfo<Value>& args) {
     return env->ThrowError("Error generating ticket keys");
   }
   SSL_CTX_set_tlsext_ticket_key_cb(sc->ctx_.get(), TicketCompatibilityCallback);
+}
+
+
+void SecureContext::IsDTLS(const FunctionCallbackInfo<Value>& args) {
+  SecureContext* sc;
+  ASSIGN_OR_RETURN_UNWRAP(&sc, args.Holder());
+
+  CHECK_NOT_NULL(sc->ctx_);
+  args.GetReturnValue().Set(sc->is_dtls);
 }
 
 

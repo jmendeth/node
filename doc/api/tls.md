@@ -686,7 +686,8 @@ changes:
   * `secureContext`: TLS context object created with
     [`tls.createSecureContext()`][]. If a `secureContext` is _not_ provided, one
     will be created by passing the entire `options` object to
-    `tls.createSecureContext()`.
+    `tls.createSecureContext()`. If provided, it should be of the correct
+    type (TLS or DTLS), see the `dtls` option in `tls.createSecureContext()`.
   * ...: [`tls.createSecureContext()`][] options that are used if the
     `secureContext` option is missing. Otherwise, they are ignored.
 
@@ -1513,6 +1514,9 @@ changes:
     pr-url: https://github.com/nodejs/node/pull/4099
     description: The `ca` option can now be a single string containing multiple
                  CA certificates.
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: DTLS contexts can now be created by setting `dtls` to `true`.
 -->
 
 * `options` {Object}
@@ -1563,6 +1567,8 @@ changes:
     will be thrown. Although 1024 bits is permissible, use 2048 bits or larger
     for stronger security. If omitted or invalid, the parameters are silently
     discarded and DHE ciphers will not be available.
+  * `dtls` {boolean} Create a context usable for DTLS sockets rather than
+    TLS sockets. See [DTLS][].
   * `ecdhCurve` {string} A string describing a named curve or a colon separated
     list of curve NIDs or names, for example `P-521:P-384:P-256`, to use for
     ECDH key agreement. Set to `auto` to select the
@@ -1589,16 +1595,19 @@ changes:
     an OpenSSL engine. Should be used together with `privateKeyEngine`.
     Should not be set together with `key`, because both options define a
     private key in different ways.
-  * `maxVersion` {string} Optionally set the maximum TLS version to allow. One
-    of `'TLSv1.3'`, `'TLSv1.2'`, `'TLSv1.1'`, or `'TLSv1'`. Cannot be specified
+  * `maxVersion` {string} Optionally set the maximum protocol version to allow.
+    Accepts the same values as `minVersion`. Cannot be specified
     along with the `secureProtocol` option, use one or the other.
-    **Default:** [`tls.DEFAULT_MAX_VERSION`][].
-  * `minVersion` {string} Optionally set the minimum TLS version to allow. One
-    of `'TLSv1.3'`, `'TLSv1.2'`, `'TLSv1.1'`, or `'TLSv1'`. Cannot be specified
+    **Default:** [`tls.DEFAULT_MAX_VERSION`][] for TLS,
+    [`tls.DTLS_DEFAULT_MAX_VERSION`][] for DTLS.
+  * `minVersion` {string} Optionally set the minimum protocol version to allow.
+    For TLS, one of `'TLSv1.3'`, `'TLSv1.2'`, `'TLSv1.1'`, or `'TLSv1'`; for
+    DTLS, one of `'DTLSv1.2'` or `'DTLSv1'`. Cannot be specified
     along with the `secureProtocol` option, use one or the other. It is not
     recommended to use less than TLSv1.2, but it may be required for
     interoperability.
-    **Default:** [`tls.DEFAULT_MIN_VERSION`][].
+    **Default:** [`tls.DEFAULT_MIN_VERSION`][] for TLS,
+    [`tls.DTLS_DEFAULT_MIN_VERSION`][] for DTLS.
   * `passphrase` {string} Shared passphrase used for a single private key and/or
     a PFX.
   * `pfx` {string|string[]|Buffer|Buffer[]|Object[]} PFX or PKCS12 encoded
@@ -1622,6 +1631,7 @@ changes:
     `'TLSv1_1_method'` to force TLS version 1.1, or `'TLS_method'` to allow any
     TLS protocol version up to TLSv1.3.  It is not recommended to use TLS
     versions less than 1.2, but it may be required for interoperability.
+    Not used for DTLS.
     **Default:** none, see `minVersion`.
   * `sessionIdContext` {string} Opaque identifier used by servers to ensure
     session state is not shared between applications. Unused by clients.
@@ -1834,6 +1844,38 @@ added: v11.4.0
   `'TLSv1.3'`. If multiple of the options are provided, the lowest minimum is
   used.
 
+## DTLS
+
+> Stability: 1 - Experimental
+
+The DTLS protocol is a minimally modified version of TLS that allows it to
+operate on datagram-based transports like UDP, see [RFC 6347][].
+
+There are currently two versions of the protocol, DTLS 1.0 and DTLS 1.2,
+based on TLS 1.0 and TLS 1.2 respectively. These are selected with
+`minVersion` and `maxVersion` as usual, by passing `DTLSv1` or `DTLSv1.2`.
+
+### `tls.DTLS_DEFAULT_MAX_VERSION`
+<!-- YAML
+added: REPLACEME
+-->
+
+* {string} The default value of the `maxVersion` option of
+  [`tls.createSecureContext()`][] for DTLS. It can be assigned any of the
+  supported DTLS protocol versions, `'DTLSv1.2'` or `'DTLSv1'`.
+  **Default:** `'DTLSv1.2'`.
+
+## `tls.DTLS_DEFAULT_MIN_VERSION`
+<!-- YAML
+added: REPLACEME
+-->
+
+* {string} The default value of the `minVersion` option of
+  [`tls.createSecureContext()`][] for DTLS. It can be assigned any of the
+  supported DTLS protocol versions, `'DTLSv1.2'` or `'DTLSv1'`.
+  **Default:** `'DTLSv1.2'`, unless changed using CLI options. Using
+  `--dtls-min-v1.0` sets the default to `'DTLSv1'`.
+
 ## Deprecated APIs
 
 ### Class: `CryptoStream`
@@ -1967,6 +2009,8 @@ where `secureSocket` has the same API as `pair.cleartext`.
 [`tls.DEFAULT_ECDH_CURVE`]: #tls_tls_default_ecdh_curve
 [`tls.DEFAULT_MAX_VERSION`]: #tls_tls_default_max_version
 [`tls.DEFAULT_MIN_VERSION`]: #tls_tls_default_min_version
+[`tls.DTLS_DEFAULT_MAX_VERSION`]: #tls_tls_dtls_default_max_version
+[`tls.DTLS_DEFAULT_MIN_VERSION`]: #tls_tls_dtls_default_min_version
 [`tls.Server`]: #tls_class_tls_server
 [`tls.TLSSocket.enableTrace()`]: #tls_tlssocket_enabletrace
 [`tls.TLSSocket.getPeerCertificate()`]: #tls_tlssocket_getpeercertificate_detailed
@@ -1979,6 +2023,7 @@ where `secureSocket` has the same API as `pair.cleartext`.
 [`tls.createServer()`]: #tls_tls_createserver_options_secureconnectionlistener
 [`tls.getCiphers()`]: #tls_tls_getciphers
 [`tls.rootCertificates`]: #tls_tls_rootcertificates
+[DTLS]: #tls_dtls
 [Chrome's 'modern cryptography' setting]: https://www.chromium.org/Home/chromium-security/education/tls#TOC-Cipher-Suites
 [DHE]: https://en.wikipedia.org/wiki/Diffie%E2%80%93Hellman_key_exchange
 [ECDHE]: https://en.wikipedia.org/wiki/Elliptic_curve_Diffie%E2%80%93Hellman
@@ -1990,6 +2035,7 @@ where `secureSocket` has the same API as `pair.cleartext`.
 [RFC 2246]: https://www.ietf.org/rfc/rfc2246.txt
 [RFC 5077]: https://tools.ietf.org/html/rfc5077
 [RFC 5929]: https://tools.ietf.org/html/rfc5929
+[RFC 6347]: https://tools.ietf.org/html/rfc6347
 [SSL_METHODS]: https://www.openssl.org/docs/man1.1.1/man7/ssl.html#Dealing-with-Protocol-Methods
 [Session Resumption]: #tls_session_resumption
 [Stream]: stream.html#stream_stream

@@ -1874,7 +1874,7 @@ connection.
 added: v13.3.0
 -->
 
-The context must be a `SecureContext`.
+The context must be a `SecureContext` of the correct type (TLS or DTLS).
 
 <a id="ERR_TLS_INVALID_STATE"></a>
 ### `ERR_TLS_INVALID_STATE`
@@ -1894,7 +1894,8 @@ disabled because it is insecure.
 <a id="ERR_TLS_INVALID_PROTOCOL_VERSION"></a>
 ### `ERR_TLS_INVALID_PROTOCOL_VERSION`
 
-Valid TLS protocol versions are `'TLSv1'`, `'TLSv1.1'`, or `'TLSv1.2'`.
+Valid TLS protocol versions are `'TLSv1'`, `'TLSv1.1'`, `'TLSv1.2'` or
+`'TLSv1.3'`. Valid DTLS protocol versions are `'DTLSv1'` or `'DTLSv1.2'`.
 
 <a id="ERR_TLS_PROTOCOL_VERSION_CONFLICT"></a>
 ### `ERR_TLS_PROTOCOL_VERSION_CONFLICT`

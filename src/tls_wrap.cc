@@ -65,6 +65,7 @@ TLSWrap::TLSWrap(Environment* env,
       SSLWrap<TLSWrap>(env, sc, kind),
       StreamBase(env),
       sc_(sc) {
+  CHECK(!SSL_is_dtls(ssl_.get()));
   MakeWeak();
   StreamBase::AttachToObject(GetObject());
 

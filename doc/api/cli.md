@@ -145,6 +145,15 @@ Make built-in language features like `eval` and `new Function` that generate
 code from strings throw an exception instead. This does not affect the Node.js
 `vm` module.
 
+### `--dtls-min-v1.0`
+<!-- YAML
+added:
+ - REPLACEME
+-->
+
+Set default [`tls.DTLS_DEFAULT_MIN_VERSION`][] to 'DTLSv1'.
+Use for compatibility with old TLS clients or servers.
+
 ### `--enable-fips`
 <!-- YAML
 added: v6.0.0
@@ -1151,6 +1160,7 @@ node --require "./a.js" --require "./b.js"
 Node.js options that are allowed are:
 <!-- node-options-node start -->
 * `--disable-proto`
+* `--dtls-min-v1.0`
 * `--enable-fips`
 * `--enable-source-maps`
 * `--experimental-import-meta-resolve`
@@ -1479,6 +1489,7 @@ $ node --max-old-space-size=1536 index.js
 [`process.setUncaughtExceptionCaptureCallback()`]: process.html#process_process_setuncaughtexceptioncapturecallback_fn
 [`tls.DEFAULT_MAX_VERSION`]: tls.html#tls_tls_default_max_version
 [`tls.DEFAULT_MIN_VERSION`]: tls.html#tls_tls_default_min_version
+[`tls.DTLS_DEFAULT_MIN_VERSION`]: tls.html#tls_tls_dtls_default_min_version
 [`unhandledRejection`]: process.html#process_event_unhandledrejection
 [Chrome DevTools Protocol]: https://chromedevtools.github.io/devtools-protocol/
 [REPL]: repl.html

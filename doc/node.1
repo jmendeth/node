@@ -113,6 +113,10 @@ Make built-in language features like `eval` and `new Function` that generate
 code from strings throw an exception instead. This does not affect the Node.js
 `vm` module.
 .
+.It Fl -dtls-min-v1.0
+Set default minVersion for DTLS to 'DTLSv1'. Use for compatibility with
+old TLS clients or servers.
+.
 .It Fl -enable-fips
 Enable FIPS-compliant crypto at startup.
 Requires Node.js to be built with
